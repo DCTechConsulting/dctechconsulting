@@ -1,182 +1,27 @@
-Objective
-Provide business users with read-only query access to the RDS SQL Server read replica using SSMS and Windows Authentication, without granting AWS access or creating per-user SQL logins.
+Purpose & Approach
+Provide business users with read-only access to the existing RDS SQL Server Enterprise read replica via SSMS, without AWS access and without per-user DB logins. Approach: use AWS Managed Microsoft AD to domain-join the RDS instance and enable Windows Authentication (Kerberos), then grant access via a single AD security group mapped to a least-privilege database role.
 
-Scope
+Conditions & Assumptions
+Engine: Amazon RDS for SQL Server Enterprise; read replica/reader endpoint available.
 
-Engine: Amazon RDS for SQL Server Enterprise (read replica exists)
+Users: Corporate AD accounts on domain-joined Windows machines using SSMS.
 
-Identity: Corporate AD users (no AD connected to AWS yet)
+Network: Private connectivity to AWS VPC (VPN/Direct Connect/Client VPN); database remains private (no public access).
 
-Outcome: AD group-based access; SSMS Windows Authentication; no per-user DB users
+Identity: Corporate AD is trusted by AWS Managed Microsoft AD (or users/groups temporarily created in AWS Managed AD).
 
-High-Level Architecture
+Hygiene: Correct DNS and time sync across environments (required for Kerberos).
 
-Users (domain-joined Windows) → VPN/Direct Connect/Client VPN → RDS SQL Server (read-replica endpoint)
+Access Model & User Experience
+One AD security group (e.g., SQL_RO_BusinessUsers) is mapped in SQL Server to a read-only DB role with access limited to required schemas/tables/views.
 
-RDS SQL Server joined to AWS Managed Microsoft AD (in VPC)
+No per-user SQL logins; onboarding/offboarding is managed by AD group membership only.
 
-Forest trust between AWS Managed Microsoft AD and Corporate AD
+Users connect with SSMS using Windows Authentication to the read-replica endpoint; no AWS account or credentials needed.
 
-AD security group mapped to DB role for read-only access
+Security & Operations
+Enforce MFA/Conditional Access in corporate IdP; least-privilege grants (prefer views), and keep inbound 1433 restricted to known VPN/office ranges.
 
-Prerequisites
+Enable SQL Server auditing to central logs; perform periodic access reviews of the AD group.
 
-Private connectivity to AWS VPC (Site-to-Site VPN, Direct Connect, or AWS Client VPN)
-
-VPC with private subnets in 2 AZs
-
-RDS SQL Server Enterprise instance + read-replica endpoint
-
-Ability to deploy AWS Managed Microsoft AD (Directory Service)
-
-Corporate AD team available to configure forest trust + DNS forwarders
-
-Time sync (NTP) and DNS resolution across environments
-
-Deliverables
-
-AWS Managed Microsoft AD deployed (multi-AZ)
-
-Forest trust established with Corporate AD + conditional DNS forwarders
-
-RDS SQL Server domain-joined (Windows Authentication enabled)
-
-One AD group (e.g., CORP\SQL_RO_BusinessUsers) granted read-only rights
-
-SSMS connection instructions for users
-
-Auditing enabled to CloudWatch Logs
-
-Implementation Steps
-
-Networking and Security
-
-Ensure private connectivity (VPN/DX/Client VPN).
-
-RDS security group: allow TCP 1433 from client/VPN CIDRs only.
-
-Keep RDS “Publicly Accessible” = No.
-
-Configure Route 53 Resolver rules as needed for AD DNS domains.
-
-Deploy AWS Managed Microsoft AD
-
-Create AWS Managed Microsoft AD in two private subnets (different AZs).
-
-Capture directory ID and DNS IPs for later use.
-
-Establish AD Trust + DNS
-
-With Corporate AD team:
-
-Set up a forest trust (one-way or two-way per policy) between Corporate AD and AWS Managed AD.
-
-Configure conditional DNS forwarders both ways so each forest resolves the other’s domain.
-
-Validate trust (name resolution, SID filtering policy as required).
-
-Domain-Join RDS SQL Server
-
-Modify RDS SQL Server instance:
-
-Enable Microsoft SQL Server Windows Authentication.
-
-Select AWS Managed Microsoft AD directory to join.
-
-Confirm successful domain join in RDS console.
-
-Configure Read-only Authorization (SQL)
-
-In SSMS (admin context):
-
-Create role:
-
-CREATE ROLE app_readonly;
-
-GRANT SELECT ON SCHEMA::dbo TO app_readonly; (or limit to specific schemas/tables/views)
-
-Map AD group:
-
-CREATE LOGIN [CORP\SQL_RO_BusinessUsers] FROM WINDOWS;
-
-USE <DBNAME>;
-
-CREATE USER [CORP\SQL_RO_BusinessUsers] FOR LOGIN [CORP\SQL_RO_BusinessUsers];
-
-EXEC sp_addrolemember 'app_readonly', 'CORP\SQL_RO_BusinessUsers';
-
-Avoid per-user SQL logins entirely; manage access via AD group membership.
-
-Client Access (SSMS)
-
-Provide users the read-replica endpoint DNS.
-
-SSMS settings:
-
-Server name: <read-replica-endpoint>
-
-Authentication: Windows Authentication
-
-Ensure users are logged into domain accounts on domain-joined Windows machines with network access to the VPC.
-
-Auditing and Monitoring
-
-Enable SQL Server Audit on RDS (log logins and required activity).
-
-Send audit to CloudWatch Logs.
-
-Aggregate AD sign-in/Kerberos logs in SIEM and correlate with DB logs.
-
-Enable VPC Flow Logs (optional) for network visibility.
-
-Security and Compliance Controls
-
-MFA and Conditional Access in Corporate AD/IdP.
-
-Least-privilege security groups and DB permissions.
-
-No public exposure; restrict 1433 to VPN/office ranges.
-
-Quarterly access reviews of AD group membership.
-
-Break-glass SQL login stored in Secrets Manager with strict IAM (optional).
-
-Testing and Validation
-
-DNS/Trust: Validate cross-forest name resolution and trust status.
-
-Kerberos: From a client, verify tickets (klist) and Kerberos usage (avoid NTLM fallback).
-
-SSMS: Test connection to read-replica endpoint using Windows Authentication; confirm read-only operations.
-
-Failover: Validate read endpoint stability and Windows Auth post-failover (if applicable).
-
-Risks and Mitigations
-
-Trust/DNS misconfigurations: Coordinate with AD team; document DNS forwarders and time sync.
-
-Kerberos failures due to time drift: Ensure NTP alignment across clients, AD DCs, and AWS Managed AD.
-
-Over-permissioning: Use views and schema-scoped GRANTs; avoid db_datareader if not necessary.
-
-Timeline (Typical)
-
-Day 0-1: Networking validation and SGs
-
-Day 1-2: Deploy AWS Managed AD
-
-Day 2-4: Trust + DNS with Corporate AD
-
-Day 4: RDS domain join + SQL role mapping
-
-Day 5: Testing, audit enablement, user rollout
-
-Contacts/Ownership
-
-AD/Identity: Corporate AD team + AWS Directory Service admin
-
-Network: Network/Security team (VPN, SGs, DNS)
-
-Database: DBA for role/permissions and audit
-
-Cloud: AWS platform owner for RDS/Directory/VPC configuration
+Validate Kerberos (time/DNS/SPNs), and ensure read-only behavior and stable access during failover.
